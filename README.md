@@ -21,7 +21,7 @@
 
 ## 📜 About This Treasure
 
-**sea_get_line** be a swift and sturdy replacement for the common `get_next_line`, built to be a worthy companion to the **sealib** library. Crafted by **Swittzy/espadara**, this function charts a different course.
+**sea_get_line** be a swift and sturdy replacement for the common `get_next_line`, built to be a worthy companion to the **sealib** library. Crafted by myself, this function charts a different course.
 
 Instead of reading text "lines," sea_get_line reads byte streams up to a `\n` delimiter. It is **binary-safe**, meaning it handles embedded `\0` null bytes without stopping, making it perfect for parsing binary protocols, network streams, or any file where `\0` is valid data. It's built for speed, leveraging the fastest memory functions from sealib.
 
