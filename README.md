@@ -33,7 +33,7 @@ It aligns with modern C standards: it returns a standard `char *` string and uti
 - 🚀 **Sliding Window Architecture** - Zero-copy buffer management for the vast majority of reads. No more `malloc`/`free` churn on every line!
 - 📈 **Geometric Growth** - Buffer capacity doubles automatically when full, preventing performance degradation on massive lines.
 - ✨ **Binary Safe Logic** - Internally handles embedded `\0` null bytes without stopping (reads until `\n` or EOF).
-- ⚡ **SIMD Accelerated** - Uses **sealib**'s `sea_memchr` (AVX/SSE) for rapid newline scanning and `sea_memcpy_fast` for data movement.
+- ⚡ **SIMD Accelerated** - Uses **sealib**'s `sea_memcpy_fast` for data movement.
 - 🛠️ **Standard C API** - Returns a `char *` and sets `errno`. No more ambiguous return values.
 - ⚔️ **Benchmark-Driven** - Proven to handle 100MB+ files in ~1 second on modern hardware.
 
