@@ -18,7 +18,7 @@
 /*      Filename: sea_get_line.h                                              */
 /*      By: espadara <espadara@pirate.capn.gg>                                */
 /*      Created: 2025/11/09 16:40:44 by espadara                              */
-/*      Updated: 2025/11/22 08:54:36 by espadara                              */
+/*      Updated: 2025/11/22 10:37:55 by espadara                              */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -28,7 +28,7 @@
 # include "sealib.h"
 
 # ifndef BUFFER_SIZE
-#  define BUFFER_SIZE 4096
+#  define BUFFER_SIZE 4096 * 42
 # endif
 
 # ifndef FD_MAX
