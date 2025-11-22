@@ -18,7 +18,7 @@
 /*      Filename: test_main.c                                                 */
 /*      By: espadara <espadara@pirate.capn.gg>                                */
 /*      Created: 2025/11/09 17:05:23 by espadara                              */
-/*      Updated: 2025/11/09 17:06:27 by espadara                              */
+/*      Updated: 2025/11/22 08:59:01 by espadara                              */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -30,6 +30,7 @@
 #include <time.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define TEST_FILE "temp_test_file.txt"
 #define OUTPUT_FILE "temp_output_file.txt"
@@ -54,11 +55,11 @@ int	run_test_case(t_test_case *test)
 {
 	char	cmd_buf[256];
 	int		in_fd, out_fd;
-	void	*line;
-	ssize_t	line_size;
+	char	*line;
 	clock_t	start, end;
 	double	cpu_time_used;
 	int		ret_status = 0; // 0 = PASS
+	errno = 0;
 
 	printf("--- Test: %s (%d lines of %d bytes) ---\n",
 		test->name, test->line_count, test->line_length);
@@ -84,10 +85,10 @@ int	run_test_case(t_test_case *test)
 	// 3. Run and time the function
 	printf("Running sea_get_line...\n");
 	start = clock();
-	while ((line_size = sea_get_line(in_fd, &line)) > 0)
+	while ((line = sea_get_line(in_fd)))
 	{
 		// Write the buffer to the output file to verify its contents
-		write(out_fd, line, line_size);
+		write(out_fd, line, sea_strlen(line));
 		free(line);
 		line = NULL;
 	}
@@ -97,7 +98,7 @@ int	run_test_case(t_test_case *test)
 	close(in_fd);
 	close(out_fd);
 
-	if (line_size < 0)
+	if (errno != 0)
 	{
 		fprintf(stderr, "Error: sea_get_line returned -1\n");
 		ret_status = 1; // FAIL

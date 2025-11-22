@@ -18,146 +18,189 @@
 /*      Filename: sea_get_line.c                                              */
 /*      By: espadara <espadara@pirate.capn.gg>                                */
 /*      Created: 2025/11/09 16:47:07 by espadara                              */
-/*      Updated: 2025/11/09 16:57:03 by espadara                              */
+/*      Updated: 2025/11/22 09:20:27 by espadara                              */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include "sea_get_line.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <stdbool.h>
 
-typedef struct s_buffer {
-	void	*data;
-	size_t	size;
-}	t_buffer;
+/* TUNING:
+   64KB is often the sweet spot for kernel pipe/read buffers.
+   4KB is too small for high throughput on modern SSDs.
+*/
+#ifndef BUFFER_SIZE
+# define BUFFER_SIZE 4096
+#endif
 
-static void	*sgl_memcpy(void *dest, const void *src, size_t n)
+#ifndef FD_MAX
+# define FD_MAX 1024
+#endif
+
+/* External fast copy */
+void    *sea_memcpy_fast(void *dest, const void *src, size_t n);
+
+typedef struct s_stash {
+    unsigned char   *buf;
+    size_t          start;  // Index where valid data begins
+    size_t          end;    // Index where valid data ends
+    size_t          cap;    // Total capacity
+} t_stash;
+
+/* Cleans up the stash completely.
+*/
+static void sgl_nuke(t_stash *s)
 {
-  if (n >= 16)
-    return (sea_memcpy_fast(dest, src, n));
-  else
-    return (sea_memcpy(dest, src, n));
+    if (s->buf)
+        free(s->buf);
+    s->buf = NULL;
+    s->start = 0;
+    s->end = 0;
+    s->cap = 0;
 }
 
-/**
- * @brief Frees the buffer data and resets the struct.
- */
-static void	sgl_free_buf(t_buffer *buf)
+/*
+   Extracts a line from the stash using the sliding window.
+   Crucially: IT DOES NOT REALLOCATE THE STASH.
+*/
+static char *sgl_extract_window(t_stash *s, size_t nl_pos)
 {
-  if (buf->data)
-	{
-      free(buf->data);
-      buf->data = NULL;
-	}
-  buf->size = 0;
-}
+    char    *line;
+    size_t  len;
 
-/**
- * @return 1 on success, -1 on malloc error.
- */
-static int	sgl_join_mem(t_buffer *leftover, void *read_buf,
-						ssize_t read_size)
-{
-  void	*new_data;
+    len = (nl_pos - s->start) + 1; // Length including \n
 
-  if (leftover->data == NULL)
+    // We only malloc the result line. We NEVER malloc the stash here.
+    if (!(line = malloc(len + 1)))
+        return (NULL);
+
+    // Copy line from the window
+    sea_memcpy_fast(line, s->buf + s->start, len);
+    line[len] = '\0';
+
+    // SLIDE THE WINDOW: Just advance the start index.
+    // Zero copies. Zero reallocs.
+    s->start += len;
+
+    // Optimization: If stash is empty after extraction, reset indices to 0
+    if (s->start == s->end)
     {
-      new_data = malloc(read_size);
-      if (!new_data)
-        return (-1);
-      sgl_memcpy(new_data, read_buf, read_size);
-      leftover->data = new_data;
-      leftover->size = read_size;
-      return (1);
-	}
+        s->start = 0;
+        s->end = 0;
+    }
 
-  new_data = malloc(leftover->size + read_size);
-  if (!new_data)
-    return (-1);
-  sgl_memcpy(new_data, leftover->data, leftover->size);
-  sgl_memcpy(new_data + leftover->size, read_buf, read_size);
-  free(leftover->data);
-  leftover->data = new_data;
-  leftover->size += read_size;
-  return (1);
+    return (line);
 }
 
-/**
- * @brief Extracts a line from the buffer, updates the
- * leftover, and sets the *line pointer.
- * @return The length of the extracted line, or -1 on malloc error.
- */
-static ssize_t	sgl_extract_line(t_buffer *buf, void **line,
-                                 void *nl_ptr)
+/*
+   Ensures space for reading.
+   1. If there is space at the tail, do nothing.
+   2. If buffer is full but has dead space at start, COMPACT it (memmove).
+   3. If buffer is physically full, GROW it.
+*/
+static bool sgl_prepare_read(t_stash *s)
 {
-  ssize_t	line_len;
-  size_t	new_leftover_size;
-  void	*new_leftover_data;
+    unsigned char   *new_buf;
+    size_t          data_len;
+    size_t          new_cap;
 
-  line_len = (nl_ptr - buf->data) + 1;
-  *line = malloc(line_len);
-  if (!*line)
-    return (-1);
+    // Case 1: Enough space at the end? (We want to read at least BUFFER_SIZE/2 or 4k)
+    // Adjust threshold as needed.
+    if (s->cap - s->end >= BUFFER_SIZE)
+        return (true);
 
-  sgl_memcpy(*line, buf->data, line_len);
-  new_leftover_size = buf->size - line_len;
-  if (new_leftover_size > 0)
+    data_len = s->end - s->start;
+
+    // Case 2: We have garbage space at the start. Compact!
+    // Only compact if the garbage is significant (e.g. > 25% of cap)
+    if (s->start > 0 && (s->cap - data_len) >= BUFFER_SIZE)
     {
-      new_leftover_data = malloc(new_leftover_size);
-      if (!new_leftover_data)
-          {
-            free(*line);
-            return (-1);
-          }
-      sgl_memcpy(new_leftover_data, nl_ptr + 1, new_leftover_size);
-	}
-  else
-		new_leftover_data = NULL;
-  free(buf->data);
-  buf->data = new_leftover_data;
-  buf->size = new_leftover_size;
-  return (line_len);
+        // Move valid data to 0
+        memmove(s->buf, s->buf + s->start, data_len);
+        s->start = 0;
+        s->end = data_len;
+        return (true);
+    }
+
+    // Case 3: Buffer is actually full. Grow.
+    new_cap = (s->cap == 0) ? BUFFER_SIZE : s->cap * 2;
+    // Safety check for overflow (optional but good practice)
+    if (new_cap < s->cap) return (false);
+
+    if (!(new_buf = malloc(new_cap)))
+        return (false);
+
+    if (data_len > 0)
+        sea_memcpy_fast(new_buf, s->buf + s->start, data_len);
+
+    free(s->buf);
+    s->buf = new_buf;
+    s->start = 0;
+    s->end = data_len;
+    s->cap = new_cap;
+    return (true);
 }
 
-
-ssize_t	sea_get_line(int fd, void **line)
+char *sea_get_line(int fd)
 {
-  static t_buffer	leftover[FD_MAX];
-  ssize_t			bytes_read;
-  char			read_buf[BUFFER_SIZE];
-  void			*nl_ptr;
+    static t_stash  st[FD_MAX];
+    ssize_t         bytes_read;
+    unsigned char   *nl_ptr;
 
-  if (fd < 0 || fd >= FD_MAX || !line || BUFFER_SIZE <= 0)
-    return (-1);
-  *line = NULL;
+    if (fd < 0 || fd >= FD_MAX || BUFFER_SIZE <= 0)
+    {
+        errno = EBADF;
+        return (NULL);
+    }
 
-  nl_ptr = sea_memchr(leftover[fd].data, '\n', leftover[fd].size);
-    if (nl_ptr)
-      return (sgl_extract_line(&leftover[fd], line, nl_ptr));
+    while (true)
+    {
+        // 1. FAST SCAN: Use memchr (SIMD Optimized by libc)
+        // We look from start to end.
+        if (st[fd].end > st[fd].start)
+        {
+            // Calculate where to start searching.
+            // In a perfect world, we track where we last searched,
+            // but searching the whole active window is safer and usually fast enough.
+            nl_ptr = memchr(st[fd].buf + st[fd].start, '\n', st[fd].end - st[fd].start);
+            if (nl_ptr)
+            {
+                // Calculate absolute index of newline
+                return (sgl_extract_window(&st[fd], (size_t)(nl_ptr - st[fd].buf)));
+            }
+        }
 
-    while ((bytes_read = read(fd, read_buf, BUFFER_SIZE)) > 0)
-      {
-        if (sgl_join_mem(&leftover[fd], read_buf, bytes_read) == -1)
-          {
-            sgl_free_buf(&leftover[fd]);
-            return (-1);
-          }
-        nl_ptr = sea_memchr(leftover[fd].data, '\n', leftover[fd].size);
-        if (nl_ptr)
-          return (sgl_extract_line(&leftover[fd], line, nl_ptr));
-      }
-    if (bytes_read < 0)
-      {
-        sgl_free_buf(&leftover[fd]);
-        return (-1);
-      }
-    if (leftover[fd].size > 0)
-      {
-        *line = leftover[fd].data;
-        ssize_t final_size = leftover[fd].size;
-        leftover[fd].data = NULL;
-        leftover[fd].size = 0;
-        return (final_size);
-      }
+        // 2. Prepare Buffer (Compact or Grow)
+        if (!sgl_prepare_read(&st[fd]))
+        {
+            sgl_nuke(&st[fd]);
+            errno = ENOMEM;
+            return (NULL);
+        }
 
-	sgl_free_buf(&leftover[fd]);
-	return (0);
+        // 3. READ (Append to end)
+        bytes_read = read(fd, st[fd].buf + st[fd].end, st[fd].cap - st[fd].end);
+
+        if (bytes_read < 0)
+        {
+            sgl_nuke(&st[fd]);
+            return (NULL); // errno set by read
+        }
+        else if (bytes_read == 0)
+        {
+            if (st[fd].start == st[fd].end)
+            {
+                sgl_nuke(&st[fd]);
+                return (NULL); // True EOF
+            }
+            // Return remainder
+            return (sgl_extract_window(&st[fd], st[fd].end - 1));
+        }
+
+        st[fd].end += bytes_read;
+    }
 }

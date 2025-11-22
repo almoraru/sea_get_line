@@ -18,7 +18,7 @@
 /*      Filename: sea_get_line.h                                              */
 /*      By: espadara <espadara@pirate.capn.gg>                                */
 /*      Created: 2025/11/09 16:40:44 by espadara                              */
-/*      Updated: 2025/11/09 16:41:07 by espadara                              */
+/*      Updated: 2025/11/22 08:54:36 by espadara                              */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -35,10 +35,6 @@
 #  define FD_MAX 1024
 # endif
 
-/**
- * @note The caller is responsible for free()'ing the buffer
- * pointed to by *line.
- */
-ssize_t	sea_get_line(int fd, void **line);
+char	*sea_get_line(int fd);
 
 #endif
